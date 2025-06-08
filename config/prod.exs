@@ -6,7 +6,7 @@ import Config
 # which you should run after static files are built and
 # before starting your production server.
 config :sgiath_chat_web, ChatWeb.Endpoint,
-  url: [host: "chat.sgiath.dev", port: 443],
+  url: [port: 443],
   cache_static_manifest: "priv/static/cache_manifest.json"
 
 # Configures Swoosh API Client

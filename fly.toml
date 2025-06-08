@@ -1,0 +1,38 @@
+app = 'sgiath-chat'
+primary_region = 'dfw'
+kill_signal = 'SIGTERM'
+
+[build]
+
+[deploy]
+  release_command = "/app/bin/migrate"
+
+[env]
+  PHX_HOST = 'sgiath-chat.fly.dev'
+  PORT = '8080'
+
+  # IPv6 support
+  ECTO_IPV6 = true
+  ERL_AFLAGS = "-proto_dist inet6_tcp"
+
+  # clusetring support
+  DNS_CLUSTER_QUERY = "sgiath-chat.internal"
+  RELEASE_COOKIE = "_EgGr5hsYpNFf1x8fXtOpubwMOMBCoPOHO5Lu9awA3kq3lZC9yCZ9A=="
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+  [http_service.concurrency]
+    type = 'connections'
+    hard_limit = 1000
+    soft_limit = 1000
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1

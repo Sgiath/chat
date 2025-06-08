@@ -11,7 +11,10 @@ defmodule Chat.Umbrella.MixProject do
       listeners: [Phoenix.CodeReloader],
       releases: [
         default: [
-          applications: [sgiath_chat_web: :permanent]
+          applications: [
+            sgiath_chat: :permanent,
+            sgiath_chat_web: :permanent
+          ]
         ]
       ]
     ]

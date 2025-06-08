@@ -33,7 +33,7 @@
 
               # useful Elixir defaults
               env = {
-                ERL_AFLAGS = "+pc unicode -kernel shell_history enabled";
+                ERL_AFLAGS = "+pc unicode -kernel shell_history enabled -proto_dist inet6_tcp";
                 ELIXIR_ERL_OPTIONS = "+fnu +sssdio 128";
               };
 

@@ -23,11 +23,19 @@ RUN mix local.hex --force \
 ENV MIX_ENV="prod"
 
 # install mix dependencies
-COPY . .
+COPY mix.exs mix.lock .
+COPY apps/sgiath_chat_web/mix.exs apps/sgiath_chat_web/mix.exs
+COPY apps/sgiath_chat/mix.exs apps/sgiath_chat/mix.exs
 RUN mix deps.get --only $MIX_ENV
-RUN mix deps.compile
 
+# config
+RUN mkdir config
+COPY config/config.exs config/${MIX_ENV}.exs config/
+RUN mix deps.compile
 RUN mix assets.setup
+
+# source code
+COPY apps apps
 
 # compile assets
 RUN mix assets.deploy
@@ -35,6 +43,8 @@ RUN mix assets.deploy
 # Compile the release
 RUN mix compile
 
+COPY config/runtime.exs config/
+COPY rel rel
 RUN mix release
 
 # start a new build stage so that the final image will only contain
