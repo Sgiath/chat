@@ -82,6 +82,8 @@ defmodule SgiathChat.Conversation do
     :conn,
     :request_ref,
     :timeout_ref,
+    :idle_timeout,
+    :idle_timer_ref,
     tool_handlers: [],
     event_handlers: [],
     tool_routing: %{},
@@ -106,6 +108,8 @@ defmodule SgiathChat.Conversation do
           conn: Mint.HTTP.t() | nil,
           request_ref: reference() | nil,
           timeout_ref: reference() | nil,
+          idle_timeout: non_neg_integer() | :infinity,
+          idle_timer_ref: reference() | nil,
           messages: [map()],
           tools: [map()] | nil,
           opts: keyword(),
@@ -134,6 +138,7 @@ defmodule SgiathChat.Conversation do
   - `:caller` - Optional. PID to receive messages (default: calling process)
   - `:api_key` - Optional. OpenRouter API key (default: from config)
   - `:timeout` - Optional. Request timeout in ms (default: 60_000)
+  - `:idle_timeout` - Optional. Idle timeout in ms (default: 30 minutes, `:infinity` to disable)
   - `:temperature` - Optional. Sampling temperature
   - `:max_tokens` - Optional. Maximum tokens to generate
   - `:top_p` - Optional. Top-p sampling parameter
@@ -300,6 +305,7 @@ defmodule SgiathChat.Conversation do
     caller = Keyword.get(opts, :caller)
     messages = Keyword.get(opts, :messages, [])
     persist_initial = Keyword.get(opts, :persist_initial, false)
+    idle_timeout = Keyword.get(opts, :idle_timeout, :timer.minutes(30))
 
     # Normalize handlers to lists (supports both single module and list)
     tool_handlers = opts |> Keyword.get(:tool_handler) |> List.wrap()
@@ -334,8 +340,12 @@ defmodule SgiathChat.Conversation do
           api_key: api_key,
           messages: messages,
           tools: tools,
-          opts: model_opts
+          opts: model_opts,
+          idle_timeout: idle_timeout
         }
+
+        # Schedule idle timer
+        state = schedule_idle_timer(state)
 
         # Emit initial messages to event handlers if persist_initial is true
         if persist_initial do
@@ -365,6 +375,9 @@ defmodule SgiathChat.Conversation do
     emit_message(state, user_message)
 
     state = %{state | messages: messages, busy: true}
+
+    # Reset idle timer on activity
+    state = schedule_idle_timer(state)
 
     # Start the LLM request
     send(self(), :start_request)
@@ -398,6 +411,17 @@ defmodule SgiathChat.Conversation do
     {:noreply, %{state | busy: false, conn: nil, request_ref: nil, timeout_ref: nil}}
   end
 
+  def handle_info(:idle_check, %{busy: true} = state) do
+    # Still processing a request, reschedule the idle check
+    {:noreply, schedule_idle_timer(state)}
+  end
+
+  def handle_info(:idle_check, state) do
+    # Not busy, stop the conversation due to idle timeout
+    Logger.info("Conversation #{inspect(state.id)} idle timeout - stopping")
+    {:stop, :normal, state}
+  end
+
   def handle_info(message, %{conn: nil} = state) do
     # No active connection, ignore message
     Logger.debug("Received message with no active connection: #{inspect(message)}")
@@ -424,6 +448,7 @@ defmodule SgiathChat.Conversation do
 
   @impl true
   def terminate(_reason, state) do
+    cancel_idle_timer(state.idle_timer_ref)
     cleanup_connection(state)
     :ok
   end
@@ -566,6 +591,9 @@ defmodule SgiathChat.Conversation do
       # Forward chunk
       emit_chunk(state, data)
 
+      # Emit reasoning tokens in real-time if present
+      emit_reasoning_from_chunk(state, data)
+
       # Accumulate chunk
       state = %{state | pending_chunks: [data | state.pending_chunks]}
       {:continue, state}
@@ -586,16 +614,16 @@ defmodule SgiathChat.Conversation do
     chunks = Enum.reverse(state.pending_chunks)
 
     # Build the assistant message from chunks
-    {content, tool_calls} = extract_response(chunks)
+    {content, tool_calls, reasoning} = extract_response(chunks)
 
     cond do
       # Has tool calls - execute them and continue
       tool_calls != [] and state.tool_handlers != [] ->
-        handle_tool_calls(state, content, tool_calls)
+        handle_tool_calls(state, content, tool_calls, reasoning)
 
       # Regular message
       true ->
-        assistant_message = build_assistant_message(content, tool_calls)
+        assistant_message = build_assistant_message(content, tool_calls, reasoning)
         messages = state.messages ++ [assistant_message]
 
         emit_message(state, assistant_message)
@@ -625,7 +653,30 @@ defmodule SgiathChat.Conversation do
     # Extract tool calls from deltas
     tool_calls = extract_tool_calls(chunks)
 
-    {content, tool_calls}
+    # Extract reasoning from deltas (OpenRouter reasoning_details format)
+    reasoning = extract_reasoning(chunks)
+
+    {content, tool_calls, reasoning}
+  end
+
+  defp extract_reasoning(chunks) do
+    # Reasoning details come as an array of objects with different types
+    # We extract text from "reasoning.text" type entries
+    chunks
+    |> Enum.flat_map(fn chunk ->
+      case get_in(chunk, ["choices", Access.at(0), "delta", "reasoning_details"]) do
+        nil -> []
+        details when is_list(details) -> details
+        _ -> []
+      end
+    end)
+    |> Enum.filter(fn detail ->
+      detail["type"] == "reasoning.text"
+    end)
+    |> Enum.map(fn detail ->
+      detail["text"] || ""
+    end)
+    |> Enum.join("")
   end
 
   defp extract_tool_calls(chunks) do
@@ -674,17 +725,25 @@ defmodule SgiathChat.Conversation do
     put_in(map, [key1, key2], current <> value)
   end
 
-  defp build_assistant_message(content, []) do
+  defp build_assistant_message(content, [], "") do
     %{"role" => "assistant", "content" => content}
   end
 
-  defp build_assistant_message(content, tool_calls) do
+  defp build_assistant_message(content, [], reasoning) do
+    %{"role" => "assistant", "content" => content, "reasoning" => reasoning}
+  end
+
+  defp build_assistant_message(content, tool_calls, "") do
     %{"role" => "assistant", "content" => content, "tool_calls" => tool_calls}
   end
 
-  defp handle_tool_calls(state, content, tool_calls) do
+  defp build_assistant_message(content, tool_calls, reasoning) do
+    %{"role" => "assistant", "content" => content, "tool_calls" => tool_calls, "reasoning" => reasoning}
+  end
+
+  defp handle_tool_calls(state, content, tool_calls, reasoning) do
     # Add assistant message with tool calls to history
-    assistant_message = build_assistant_message(content, tool_calls)
+    assistant_message = build_assistant_message(content, tool_calls, reasoning)
     messages = state.messages ++ [assistant_message]
 
     emit_message(state, assistant_message)
@@ -766,6 +825,22 @@ defmodule SgiathChat.Conversation do
     :ok
   end
 
+  defp schedule_idle_timer(%{idle_timeout: :infinity} = state), do: state
+
+  defp schedule_idle_timer(state) do
+    # Cancel existing timer if any
+    cancel_idle_timer(state.idle_timer_ref)
+    ref = Process.send_after(self(), :idle_check, state.idle_timeout)
+    %{state | idle_timer_ref: ref}
+  end
+
+  defp cancel_idle_timer(nil), do: :ok
+
+  defp cancel_idle_timer(ref) do
+    Process.cancel_timer(ref)
+    :ok
+  end
+
   # Event emission helpers - send to both caller and event_handlers
 
   defp emit_chunk(state, data) do
@@ -778,6 +853,40 @@ defmodule SgiathChat.Conversation do
         handler.on_chunk(state.id, data)
       end
     end)
+  end
+
+  defp emit_reasoning(state, text) do
+    # Send to caller if set
+    if state.caller, do: send(state.caller, {:sgiath_chat, self(), {:reasoning, text}})
+
+    # Call all event handlers that implement on_reasoning
+    Enum.each(state.event_handlers, fn handler ->
+      if function_exported?(handler, :on_reasoning, 2) do
+        handler.on_reasoning(state.id, text)
+      end
+    end)
+  end
+
+  # Extract and emit reasoning text from a streaming chunk
+  defp emit_reasoning_from_chunk(state, data) do
+    case get_in(data, ["choices", Access.at(0), "delta", "reasoning_details"]) do
+      nil ->
+        :ok
+
+      details when is_list(details) ->
+        Enum.each(details, fn detail ->
+          if detail["type"] == "reasoning.text" do
+            text = detail["text"] || ""
+
+            if text != "" do
+              emit_reasoning(state, text)
+            end
+          end
+        end)
+
+      _ ->
+        :ok
+    end
   end
 
   defp emit_message(state, message) do
