@@ -129,7 +129,9 @@ defmodule MyTools do
   end
 
   @impl true
-  def handle_tool_call("get_weather", %{"location" => location}) do
+  def handle_tool_call("get_weather", %{"location" => location}, context) do
+    # Context contains any data passed when configuring the handler
+    api_key = Map.get(context, :api_key, "default_key")
     # Call your weather API here
     {:ok, "Weather in #{location}: 22°C, sunny"}
   end
@@ -154,6 +156,34 @@ You can compose multiple tool handlers. Tools from all handlers are aggregated a
   model: "openai/gpt-4o-mini",
   tool_handler: [WeatherTools, CalendarTools, DatabaseTools]
 )
+```
+
+### Tool Handler Context
+
+Tool handlers can receive context data that is passed to every tool call. This is useful for passing configuration like API keys or database connections:
+
+```elixir
+# Without context (defaults to empty map %{})
+tool_handler: [WeatherTools, CalendarTools]
+
+# With context
+tool_handler: [{WeatherTools, %{api_key: "sk-..."}}, CalendarTools]
+
+# All with context
+tool_handler: [
+  {WeatherTools, %{api_key: weather_api_key}},
+  {DatabaseTools, %{repo: MyApp.Repo}}
+]
+```
+
+The context is passed as the third argument to `handle_tool_call/3`:
+
+```elixir
+def handle_tool_call("get_weather", %{"location" => location}, context) do
+  api_key = Map.fetch!(context, :api_key)
+  # Use api_key to call the weather API
+  {:ok, "Weather in #{location}: 22°C, sunny"}
+end
 ```
 
 ## Supervised Conversations
@@ -343,7 +373,7 @@ end
 
 - `:model` - Model identifier (e.g., `"openai/gpt-4o-mini"`)
 - `:messages` - Initial message history
-- `:tool_handler` - Module or list of modules implementing `SgiathChat.ToolHandler`
+- `:tool_handler` - Module or list of modules/tuples implementing `SgiathChat.ToolHandler` (e.g., `[MyTools, {WeatherTools, %{api_key: "..."}}]`)
 - `:event_handler` - Module or list of modules implementing `SgiathChat.EventHandler`
 - `:api_key` - OpenRouter API key
 - `:persist_initial` - Emit initial messages to event handlers (default: false)

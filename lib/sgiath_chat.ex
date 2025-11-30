@@ -235,7 +235,7 @@ defmodule SgiathChat do
 
   - `:model` - Required. The model identifier (e.g., "openai/gpt-4")
   - `:messages` - Optional. Initial message history (default: [])
-  - `:tool_handler` - Optional. Module or list of modules implementing `SgiathChat.ToolHandler`
+  - `:tool_handler` - Optional. Module or list of modules/tuples implementing `SgiathChat.ToolHandler` (e.g., `[MyTools, {WeatherTools, context}]`)
   - `:event_handler` - Optional. Module or list of modules implementing `SgiathChat.EventHandler`
   - `:caller` - Optional. PID to receive messages (default: calling process)
   - `:api_key` - Optional. OpenRouter API key (default: from config)
@@ -248,7 +248,7 @@ defmodule SgiathChat do
       {:ok, conv} = SgiathChat.conversation(
         model: "openai/gpt-4",
         messages: [%{"role" => "system", "content" => "You are helpful."}],
-        tool_handler: [WeatherTools, CalendarTools],
+        tool_handler: [CalendarTools, {WeatherTools, %{api_key: "..."}}],
         event_handler: [MyApp.Logger, MyApp.Persistence]
       )
 

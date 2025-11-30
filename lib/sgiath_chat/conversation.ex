@@ -55,6 +55,15 @@ defmodule SgiathChat.Conversation do
   The `tool_handler` option accepts a module or list of modules implementing
   `SgiathChat.ToolHandler`. Tools from all handlers are aggregated and each
   tool call is routed to the handler that declared that tool.
+
+  Handlers can be specified with optional context:
+
+      # Without context (defaults to %{})
+      tool_handler: [WeatherTools, CalendarTools]
+
+      # With context
+      tool_handler: [{WeatherTools, %{api_key: "..."}}, CalendarTools]
+
   See `SgiathChat.ToolHandler` for the behaviour specification.
   """
 
@@ -89,9 +98,9 @@ defmodule SgiathChat.Conversation do
   @type t :: %__MODULE__{
           id: term() | nil,
           model: String.t(),
-          tool_handlers: [module()],
+          tool_handlers: [module() | {module(), term()}],
           event_handlers: [module()],
-          tool_routing: %{String.t() => module()},
+          tool_routing: %{String.t() => {module(), term()}},
           caller: pid() | nil,
           api_key: String.t(),
           conn: Mint.HTTP.t() | nil,
@@ -119,7 +128,7 @@ defmodule SgiathChat.Conversation do
 
   - `:model` - Required. The model identifier (e.g., "openai/gpt-4")
   - `:messages` - Optional. Initial message history (default: [])
-  - `:tool_handler` - Optional. Module or list of modules implementing `SgiathChat.ToolHandler`
+  - `:tool_handler` - Optional. Module or list of modules/tuples implementing `SgiathChat.ToolHandler` (e.g., `[MyTools, {WeatherTools, context}]`)
   - `:event_handler` - Optional. Module or list of modules implementing `SgiathChat.EventHandler`
   - `:persist_initial` - Optional. Emit initial messages to event handlers (default: false)
   - `:caller` - Optional. PID to receive messages (default: calling process)
@@ -435,14 +444,17 @@ defmodule SgiathChat.Conversation do
   defp discover_tools([]), do: {nil, %{}}
 
   defp discover_tools(handlers) do
+    # Normalize handlers to {module, context} tuples
+    normalized = Enum.map(handlers, &normalize_handler/1)
+
     {tools, routing} =
-      Enum.reduce(handlers, {[], %{}}, fn handler, {tools_acc, routing_acc} ->
+      Enum.reduce(normalized, {[], %{}}, fn {handler, context}, {tools_acc, routing_acc} ->
         handler_tools = handler.tools()
 
         new_routing =
           Enum.reduce(handler_tools, routing_acc, fn tool, acc ->
             name = get_in(tool, ["function", "name"])
-            Map.put(acc, name, handler)
+            Map.put(acc, name, {handler, context})
           end)
 
         {tools_acc ++ handler_tools, new_routing}
@@ -450,6 +462,9 @@ defmodule SgiathChat.Conversation do
 
     {tools, routing}
   end
+
+  defp normalize_handler({module, context}) when is_atom(module), do: {module, context}
+  defp normalize_handler(module) when is_atom(module), do: {module, %{}}
 
   defp start_streaming_request(state) do
     timeout = Keyword.get(state.opts, :timeout, HTTP.default_timeout())
@@ -688,10 +703,10 @@ defmodule SgiathChat.Conversation do
 
         emit_tool_call(state, name, args)
 
-        handler = Map.get(state.tool_routing, name)
+        {handler, context} = Map.get(state.tool_routing, name)
 
         result =
-          case handler.handle_tool_call(name, args) do
+          case handler.handle_tool_call(name, args, context) do
             {:ok, result} ->
               emit_tool_result(state, name, result)
               result

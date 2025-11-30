@@ -4,7 +4,20 @@ defmodule SgiathChat.ToolHandler do
 
   A tool handler module defines both the available tools (their schemas) and
   how to execute them. The Conversation GenServer will automatically discover
-  tools by calling `tools/0` and execute them via `handle_tool_call/2`.
+  tools by calling `tools/0` and execute them via `handle_tool_call/3`.
+
+  ## Tool Handler Configuration
+
+  Tool handlers can be configured with or without context:
+
+      # Without context (context defaults to %{})
+      tool_handler: [WeatherTools, CalendarTools]
+
+      # With context
+      tool_handler: [{WeatherTools, %{api_key: "..."}}]
+
+      # Mixed
+      tool_handler: [CalendarTools, {WeatherTools, %{api_key: "..."}}]
 
   ## Example Implementation
 
@@ -52,17 +65,19 @@ defmodule SgiathChat.ToolHandler do
         end
 
         @impl true
-        def handle_tool_call("get_weather", %{"location" => location}) do
+        def handle_tool_call("get_weather", %{"location" => location}, context) do
+          # Context contains any data passed when configuring the handler
+          api_key = Map.get(context, :api_key, "default_key")
           # In real implementation, call a weather API
           {:ok, "Weather in \#{location}: 22°C, sunny"}
         end
 
-        def handle_tool_call("calculate", %{"expression" => expr}) do
+        def handle_tool_call("calculate", %{"expression" => expr}, _context) do
           # In real implementation, safely evaluate the expression
           {:ok, "Result: 42"}
         end
 
-        def handle_tool_call(name, _args) do
+        def handle_tool_call(name, _args, _context) do
           {:error, "Unknown tool: \#{name}"}
         end
       end
@@ -86,13 +101,15 @@ defmodule SgiathChat.ToolHandler do
 
   - `name` - The name of the tool being called
   - `arguments` - Map of arguments passed to the tool
+  - `context` - Context data passed when configuring the handler (defaults to `%{}`)
 
   ## Returns
 
   - `{:ok, result}` - Tool executed successfully, result is a string
   - `{:error, reason}` - Tool execution failed
   """
-  @callback handle_tool_call(name :: String.t(), arguments :: map()) ::
+  @callback handle_tool_call(name :: String.t(), arguments :: map(), context :: term()) ::
               {:ok, result :: String.t()} | {:error, reason :: term()}
-end
 
+  @optional_callbacks [handle_tool_call: 3]
+end
