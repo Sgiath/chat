@@ -51,7 +51,10 @@ defmodule SgiathChat.HTTP do
       ]
     ]
 
+    # Force HTTP/1.1 to avoid HTTP/2 flow control window size issues
+    # https://github.com/appcues/mojito/issues/54
     case Mint.HTTP.connect(:https, @openrouter_host, @openrouter_port,
+           protocols: [:http1],
            transport_opts: transport_opts
          ) do
       {:ok, conn} -> {:ok, conn}
